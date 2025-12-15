@@ -173,7 +173,6 @@ Benchmark/
 ├── benchmark_gpu.py        # PyTorch GPU operations  
 ├── benchmark_disk_ram.py   # Memory & I/O tests
 ├── pyproject.toml          # Dependencies & configuration
-├── CLAUDE.md              # Development guidance
 └── README.md              # This file
 ```
 
