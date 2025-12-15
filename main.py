@@ -18,11 +18,43 @@ from benchmark_gpu import gpu_benchmark_pytorch
 # Timestamp unique pour la session
 SESSION_TIMESTAMP = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 RESULTS_DIR = "results"
+SESSION_FILENAME = None  # Sera défini après get_system_info()
 
 
 def ensure_results_dir():
     """Crée le dossier results/ s'il n'existe pas."""
     os.makedirs(RESULTS_DIR, exist_ok=True)
+
+
+def sanitize_filename(name):
+    """Nettoie un nom pour l'utiliser dans un nom de fichier."""
+    # Remplacer les caractères problématiques
+    for char in [' ', '/', '\\', ':', '*', '?', '"', '<', '>', '|', '.']:
+        name = name.replace(char, '-')
+    return name
+
+
+def get_short_gpu_name():
+    """Retourne un nom court pour le GPU."""
+    if torch.cuda.is_available():
+        name = torch.cuda.get_device_name()
+        # Simplifier les noms courants
+        name = name.replace("NVIDIA ", "").replace("GeForce ", "")
+        name = name.replace(" ", "")
+        return name
+    elif torch.backends.mps.is_available():
+        return "AppleMetal"
+    return "NoGPU"
+
+
+def generate_session_filename(system_info):
+    """Génère un nom de fichier descriptif basé sur les infos système."""
+    hostname = sanitize_filename(system_info["hostname"])
+    cpu_cores = system_info["cpu"]["physical_cores"]
+    ram_gb = int(system_info["memory"]["total"])
+    gpu = sanitize_filename(get_short_gpu_name())
+
+    return f"{hostname}_{cpu_cores}cores_{ram_gb}GB_{gpu}_{SESSION_TIMESTAMP}"
 
 
 def get_system_info():
@@ -80,6 +112,10 @@ def get_system_info():
 
 def get_log_file_path(extension="log"):
     """Retourne le chemin du fichier de log pour cette session."""
+    global SESSION_FILENAME
+    if SESSION_FILENAME:
+        return os.path.join(RESULTS_DIR, f"{SESSION_FILENAME}.{extension}")
+    # Fallback si SESSION_FILENAME n'est pas encore défini
     return os.path.join(RESULTS_DIR, f"benchmark_results-{SESSION_TIMESTAMP}.{extension}")
 
 
@@ -250,8 +286,12 @@ def main():
         print("No GPU acceleration available")
     print("=" * 30)
 
-    # Collecte des informations système
+    # Collecte des informations système et génération du nom de fichier
     system_info = get_system_info()
+
+    global SESSION_FILENAME
+    SESSION_FILENAME = generate_session_filename(system_info)
+    print(f"📁 Output files: {SESSION_FILENAME}.*")
 
     # Sélection des benchmarks à exécuter
     if args.only:
