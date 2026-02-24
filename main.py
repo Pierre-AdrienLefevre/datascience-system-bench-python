@@ -10,6 +10,9 @@ from threading import Thread
 
 import psutil
 import torch
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 
 from benchmark_cpu import cpu_benchmark_singlecore, cpu_benchmark_multicore
 from benchmark_disk_ram import ram_benchmark, disk_benchmark
@@ -28,7 +31,6 @@ def ensure_results_dir():
 
 def sanitize_filename(name):
     """Nettoie un nom pour l'utiliser dans un nom de fichier."""
-    # Remplacer les caractères problématiques
     for char in [' ', '/', '\\', ':', '*', '?', '"', '<', '>', '|', '.']:
         name = name.replace(char, '-')
     return name
@@ -38,7 +40,6 @@ def get_short_gpu_name():
     """Retourne un nom court pour le GPU."""
     if torch.cuda.is_available():
         name = torch.cuda.get_device_name()
-        # Simplifier les noms courants
         name = name.replace("NVIDIA ", "").replace("GeForce ", "")
         name = name.replace(" ", "")
         return name
@@ -93,7 +94,7 @@ def get_system_info():
         info["gpu"] = {
             "type": "CUDA",
             "name": torch.cuda.get_device_name(),
-            "memory_total": round(torch.cuda.get_device_properties(0).total_memory / (1024**3), 2),  # GB
+            "memory_total": round(torch.cuda.get_device_properties(0).total_memory / (1024 ** 3), 2),
             "compute_capability": f"{torch.cuda.get_device_properties(0).major}.{torch.cuda.get_device_properties(0).minor}",
         }
     elif torch.backends.mps.is_available():
@@ -115,34 +116,32 @@ def get_log_file_path(extension="log"):
     global SESSION_FILENAME
     if SESSION_FILENAME:
         return os.path.join(RESULTS_DIR, f"{SESSION_FILENAME}.{extension}")
-    # Fallback si SESSION_FILENAME n'est pas encore défini
     return os.path.join(RESULTS_DIR, f"benchmark_results-{SESSION_TIMESTAMP}.{extension}")
 
 
-def log_benchmark_result(test_name, duration, system_info, log_file=None):
+def log_benchmark_result(test_name, result_data, system_info, log_file=None):
     """
-    Enregistre les résultats de benchmark dans un fichier log.
+    Enregistre les résultats de benchmark dans un fichier log (JSON Lines).
+    result_data est un dict contenant duration_seconds, ops_per_sec, etc.
     """
     if log_file is None:
         log_file = get_log_file_path("log")
 
     log_entry = {
         "test_name": test_name,
-        "duration_seconds": round(duration, 2),
+        **result_data,
         "timestamp": datetime.now().isoformat(),
-        "system_info": system_info
+        "system_info": system_info,
     }
 
-    # Ajouter au fichier log (format JSON Lines)
     with open(log_file, "a", encoding="utf-8") as f:
         f.write(json.dumps(log_entry) + "\n")
-
-    print(f"✅ {test_name}: {duration:.2f}s - Logged to {log_file}")
 
 
 def export_to_csv(results, system_info):
     """
     Exporte les résultats en format CSV.
+    results est un dict {test_name: result_data_dict}.
     """
     csv_file = get_log_file_path("csv")
 
@@ -161,49 +160,56 @@ def export_to_csv(results, system_info):
         writer.writerow([])
 
         # Données
-        writer.writerow(["Test Name", "Duration (seconds)"])
-        for test_name, duration in results.items():
-            writer.writerow([test_name, round(duration, 2)])
+        writer.writerow(["Test Name", "Duration (s)", "Timeout (s)", "Iterations", "Ops/s"])
+        for test_name, result_data in results.items():
+            writer.writerow([
+                test_name,
+                round(result_data["duration_seconds"], 2),
+                result_data.get("timeout_seconds", "N/A"),
+                result_data.get("iterations_completed", "N/A"),
+                result_data.get("ops_per_sec", "N/A"),
+            ])
 
-    print(f"📊 CSV exported to {csv_file}")
+    print(f"  CSV exported to {csv_file}")
 
-def combined_cpu_gpu_benchmark(cpu_iterations=8_000_000_000, gpu_size=15_000, gpu_loops=400, n_jobs=None, loops=50):
+
+def combined_cpu_gpu_benchmark(timeout=120):
     """
-    Benchmark combiné CPU + GPU.
-    - cpu_iterations : Nombre total d'itérations pour le CPU.
-    - gpu_size : Taille des matrices pour le GPU.
-    - gpu_loops : Nombre de répétitions pour le GPU.
-    - n_jobs : Nombre de cœurs utilisés pour le CPU (None = tous les cœurs).
-    - loops : Nombre de boucles pour prolonger le test.
+    Benchmark combiné CPU + GPU en parallèle.
+    Les deux benchmarks tournent simultanément pendant 'timeout' secondes.
     """
-    print("Starting combined CPU + GPU benchmark...")
+    cpu_result = {}
+    gpu_result = {}
 
-    # CPU benchmark (multicore)
-    def cpu_benchmark():
-        print("Running CPU tasks...")
-        cpu_benchmark_multicore(cpu_iterations, n_jobs=n_jobs, loops=loops)
+    def cpu_work():
+        nonlocal cpu_result
+        cpu_result = cpu_benchmark_multicore(timeout=timeout)
 
-    # GPU benchmark
-    def gpu_benchmark():
-        print("Running GPU tasks...")
-        gpu_benchmark_pytorch(gpu_size, gpu_loops)
+    def gpu_work():
+        nonlocal gpu_result
+        gpu_result = gpu_benchmark_pytorch(timeout=timeout)
 
-    # Start CPU and GPU benchmarks in parallel
-    cpu_thread = Thread(target=cpu_benchmark)
-    gpu_thread = Thread(target=gpu_benchmark)
+    cpu_thread = Thread(target=cpu_work)
+    gpu_thread = Thread(target=gpu_work)
 
     start = time.time()
     cpu_thread.start()
     gpu_thread.start()
 
-    # Wait for both to finish
     cpu_thread.join()
     gpu_thread.join()
-    end = time.time()
+    duration = time.time() - start
 
-    duration = end - start
-    print(f"Combined CPU + GPU benchmark completed in {duration:.2f} seconds")
-    return duration
+    return {
+        "duration_seconds": round(duration, 2),
+        "timeout_seconds": timeout,
+        "iterations_completed": 1,
+        "ops_per_sec": round(1 / duration, 4) if duration > 0 else 0,
+        "cpu_iterations": cpu_result.get("iterations_completed", 0),
+        "cpu_ops_per_sec": cpu_result.get("ops_per_sec", 0),
+        "gpu_iterations": gpu_result.get("iterations_completed", 0) if gpu_result else 0,
+        "gpu_ops_per_sec": gpu_result.get("ops_per_sec", 0) if gpu_result else 0,
+    }
 
 
 def parse_args():
@@ -213,11 +219,12 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python main.py                    # Run all benchmarks
-  python main.py --only cpu         # Run only CPU benchmarks
-  python main.py --only gpu disk    # Run only GPU and Disk benchmarks
-  python main.py --skip combined    # Skip the combined CPU+GPU benchmark
-  python main.py --no-csv           # Disable CSV export
+  python main.py                              # Run all benchmarks (120s each)
+  python main.py --cpu-single-timeout 60      # CPU single-core with 60s timeout
+  python main.py --gpu-timeout 300            # GPU with 5 min timeout
+  python main.py --only cpu-single gpu        # Run only CPU single-core and GPU
+  python main.py --skip combined              # Skip the combined CPU+GPU benchmark
+  python main.py --no-csv                     # Disable CSV export
         """
     )
 
@@ -248,20 +255,65 @@ Examples:
         help="List available benchmarks and exit"
     )
 
+    # Timeouts par benchmark
+    parser.add_argument(
+        "--cpu-single-timeout",
+        type=int,
+        default=30,
+        metavar="SECONDS",
+        help="Timeout for CPU single-core benchmark (default: 120)"
+    )
+    parser.add_argument(
+        "--cpu-multi-timeout",
+        type=int,
+        default=240,
+        metavar="SECONDS",
+        help="Timeout for CPU multi-core benchmark (default: 120)"
+    )
+    parser.add_argument(
+        "--gpu-timeout",
+        type=int,
+        default=240,
+        metavar="SECONDS",
+        help="Timeout for GPU benchmark (default: 120)"
+    )
+    parser.add_argument(
+        "--ram-timeout",
+        type=int,
+        default=30,
+        metavar="SECONDS",
+        help="Timeout for RAM benchmark (default: 120)"
+    )
+    parser.add_argument(
+        "--disk-timeout",
+        type=int,
+        default=30,
+        metavar="SECONDS",
+        help="Timeout for Disk benchmark (default: 120)"
+    )
+    parser.add_argument(
+        "--combined-timeout",
+        type=int,
+        default=240,
+        metavar="SECONDS",
+        help="Timeout for combined CPU+GPU benchmark (default: 120)"
+    )
+
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    console = Console()
 
-    # Mapping des noms CLI vers les benchmarks
+    # Mapping des noms CLI vers les benchmarks avec leurs timeouts
     benchmark_map = {
-        "cpu-single": ("CPU Single Core", cpu_benchmark_singlecore),
-        "cpu-multi": ("CPU Multi Core", cpu_benchmark_multicore),
-        "ram": ("RAM", ram_benchmark),
-        "disk": ("Disk", disk_benchmark),
-        "gpu": ("GPU", gpu_benchmark_pytorch),
-        "combined": ("Combined CPU + GPU", combined_cpu_gpu_benchmark),
+        "cpu-single": ("CPU Single Core", lambda: cpu_benchmark_singlecore(timeout=args.cpu_single_timeout)),
+        "cpu-multi": ("CPU Multi Core", lambda: cpu_benchmark_multicore(timeout=args.cpu_multi_timeout)),
+        "ram": ("RAM", lambda: ram_benchmark(timeout=args.ram_timeout)),
+        "disk": ("Disk", lambda: disk_benchmark(timeout=args.disk_timeout)),
+        "gpu": ("GPU", lambda: gpu_benchmark_pytorch(timeout=args.gpu_timeout)),
+        "combined": ("Combined CPU + GPU", lambda: combined_cpu_gpu_benchmark(timeout=args.combined_timeout)),
     }
 
     if args.list:
@@ -273,64 +325,95 @@ def main():
     # Créer le dossier results/
     ensure_results_dir()
 
-    # Display system information
-    print("=== System Information ===")
-    print(f"CPU cores available: {os.cpu_count()}")
-    print(f"PyTorch version: {torch.__version__}")
-    if torch.cuda.is_available():
-        print(f"CUDA device: {torch.cuda.get_device_name()}")
-        print(f"CUDA memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
-    elif torch.backends.mps.is_available():
-        print("MPS (Apple Metal) available")
-    else:
-        print("No GPU acceleration available")
-    print("=" * 30)
-
     # Collecte des informations système et génération du nom de fichier
     system_info = get_system_info()
 
     global SESSION_FILENAME
     SESSION_FILENAME = generate_session_filename(system_info)
-    print(f"📁 Output files: {SESSION_FILENAME}.*")
+
+    # Afficher les infos système avec un Panel rich
+    gpu_info = system_info["gpu"]["name"]
+    if torch.cuda.is_available():
+        gpu_info += f" ({torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB)"
+
+    sys_text = (
+        f"[bold]Hostname:[/bold] {system_info['hostname']}\n"
+        f"[bold]Platform:[/bold] {system_info['platform']['system']} {system_info['platform']['machine']}\n"
+        f"[bold]CPU:[/bold] {system_info['cpu']['physical_cores']} physical / {system_info['cpu']['logical_cores']} logical cores\n"
+        f"[bold]RAM:[/bold] {system_info['memory']['total']} GB\n"
+        f"[bold]GPU:[/bold] {gpu_info}\n"
+        f"[bold]PyTorch:[/bold] {torch.__version__}"
+    )
+    console.print(Panel(sys_text, title="[bold cyan]System Information", border_style="cyan"))
 
     # Sélection des benchmarks à exécuter
     if args.only:
-        benchmarks = [(name, func) for key, (name, func) in benchmark_map.items() if key in args.only]
+        benchmarks = [(key, name, func) for key, (name, func) in benchmark_map.items() if key in args.only]
     else:
-        benchmarks = [(name, func) for key, (name, func) in benchmark_map.items() if key not in args.skip]
+        benchmarks = [(key, name, func) for key, (name, func) in benchmark_map.items() if key not in args.skip]
 
-    print(f"\n🚀 Starting {len(benchmarks)} benchmark(s)...")
+    timeout_map = {
+        "cpu-single": args.cpu_single_timeout,
+        "cpu-multi": args.cpu_multi_timeout,
+        "ram": args.ram_timeout,
+        "disk": args.disk_timeout,
+        "gpu": args.gpu_timeout,
+        "combined": args.combined_timeout,
+    }
+
+    # Afficher le plan d'exécution
+    plan_table = Table(title=f"Running {len(benchmarks)} benchmark(s)", show_header=True, header_style="bold")
+    plan_table.add_column("Benchmark", style="cyan")
+    plan_table.add_column("Timeout", justify="right")
+    for key, name, _ in benchmarks:
+        plan_table.add_row(name, f"{timeout_map[key]}s")
+    console.print(plan_table)
+    console.print()
+
     results = {}
 
-    for test_name, test_func in benchmarks:
-        print(f"\n--- Running {test_name} ---")
+    for key, test_name, test_func in benchmarks:
         try:
-            start_time = time.time()
-            result = test_func()
-            duration = time.time() - start_time
+            result_data = test_func()
 
-            if result is not None:
-                results[test_name] = duration
-                log_benchmark_result(test_name, duration, system_info)
+            if result_data is not None:
+                results[test_name] = result_data
+                log_benchmark_result(test_name, result_data, system_info)
             else:
-                print(f"❌ {test_name}: Failed (no GPU available)")
+                console.print(f"  [red]{test_name}: Failed (no GPU available)[/red]")
 
         except Exception as e:
-            print(f"❌ {test_name}: Error - {str(e)}")
+            console.print(f"  [red]{test_name}: Error - {str(e)}[/red]")
+
+        console.print()
 
     # Export CSV si activé
     if not args.no_csv and results:
         export_to_csv(results, system_info)
 
-    print("\n📊 Final Results Summary:")
-    for test_name, duration in results.items():
-        print(f"  {test_name}: {duration:.2f}s")
+    # Tableau récapitulatif avec rich
+    summary = Table(title="Final Results", show_header=True, header_style="bold green")
+    summary.add_column("Test", style="cyan")
+    summary.add_column("Duration", justify="right")
+    summary.add_column("Timeout", justify="right")
+    summary.add_column("Iterations", justify="right")
+    summary.add_column("Ops/s", justify="right", style="bold green")
+    for test_name, result_data in results.items():
+        summary.add_row(
+            test_name,
+            f"{result_data['duration_seconds']:.2f}s",
+            f"{result_data.get('timeout_seconds', 'N/A')}s",
+            str(result_data.get("iterations_completed", "N/A")),
+            str(result_data.get("ops_per_sec", "N/A")),
+        )
+    console.print(summary)
 
-    print(f"\n📝 Detailed results logged to: {get_log_file_path('log')}")
+    console.print(f"\n[dim]Log:[/dim] {get_log_file_path('log')}")
     if not args.no_csv and results:
-        print(f"📊 CSV results exported to: {get_log_file_path('csv')}")
-    print(f"🖥️  Machine: {system_info['hostname']} ({system_info['platform']['system']} {system_info['platform']['machine']})")
-    print(f"⏰ Session completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        console.print(f"[dim]CSV:[/dim] {get_log_file_path('csv')}")
+    console.print(
+        f"[dim]Machine:[/dim] {system_info['hostname']} ({system_info['platform']['system']} {system_info['platform']['machine']})")
+    console.print(f"[dim]Completed:[/dim] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 
 if __name__ == "__main__":

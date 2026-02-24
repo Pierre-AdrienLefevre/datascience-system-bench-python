@@ -1,14 +1,16 @@
-import time
 import os
+import time
+
 import numpy as np
 from joblib import Parallel, delayed
+from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn
+
 
 def cpu_task(iterations, loops=1):
     """
     Tâche CPU intensive orientée Data Science.
     Simule les opérations typiques d'un workflow de machine learning et d'analyse de données.
     """
-    import math
     total_result = 0
     
     for loop in range(loops):
@@ -121,47 +123,82 @@ def cpu_task(iterations, loops=1):
 
     return total_result
 
-def cpu_benchmark_singlecore(total_iterations=500_000_000, loops=5):
+
+def cpu_benchmark_singlecore(timeout=120):
     """
     Benchmark CPU utilisant un seul cœur (séquentiel).
-    - total_iterations : Nombre total d'itérations à exécuter.
-    - loops : Nombre de boucles répétées pour répartir les calculs.
+    Tourne pendant 'timeout' secondes et compte les opérations complétées.
+    Score = ops/s (opérations par seconde).
     """
-    print("Starting single-core CPU benchmark...")
-    iterations_per_loop = total_iterations // loops
-    print(f"Each loop will handle {iterations_per_loop} iterations, repeated {loops} times.")
-
+    deadline = time.time() + timeout
+    completed = 0
     start = time.time()
-    for loop in range(loops):
-        cpu_task(iterations_per_loop)  # Exécute la tâche séquentiellement
-        print(f"Loop {loop + 1}/{loops} completed.")
-    end = time.time()
 
-    print(f"Single-core CPU benchmark completed in {end - start:.2f} seconds")
-    return end - start
+    with Progress(
+            TextColumn("[bold cyan]CPU Single Core"),
+            BarColumn(bar_width=40),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeElapsedColumn(),
+            TextColumn("[bold]{task.fields[ops]}[/bold] ops | [bold green]{task.fields[ops_s]:.2f}[/bold green] ops/s"),
+    ) as progress:
+        task = progress.add_task("cpu-single", total=timeout, ops=0, ops_s=0.0)
+        while time.time() < deadline:
+            cpu_task(10_000)
+            completed += 1
+            elapsed = time.time() - start
+            progress.update(task, completed=min(elapsed, timeout), ops=completed, ops_s=completed / elapsed)
 
-def cpu_benchmark_multicore(total_iterations=8_000_000_000, n_jobs=None, loops=50):
+    duration = time.time() - start
+    ops_per_sec = completed / duration if duration > 0 else 0
+
+    return {
+        "duration_seconds": round(duration, 2),
+        "timeout_seconds": timeout,
+        "iterations_completed": completed,
+        "ops_per_sec": round(ops_per_sec, 4),
+    }
+
+
+def cpu_benchmark_multicore(timeout=120, n_jobs=None):
     """
     Benchmark multicore avec joblib utilisant tous les cœurs disponibles.
-    - total_iterations : Nombre total d'itérations à exécuter.
-    - n_jobs : Nombre de cœurs utilisés (None = tous les cœurs).
-    - loops : Nombre de boucles répétées pour prolonger le test.
+    Tourne pendant 'timeout' secondes et compte les batches complétés.
+    Chaque batch lance n_jobs tâches parallèles.
+    Score = ops/s (batches par seconde).
     """
     if n_jobs is None:
         n_jobs = os.cpu_count()
-    print(f"Starting joblib CPU benchmark with {n_jobs} jobs...")
-    iterations_per_job = total_iterations // n_jobs
-    iterations_per_loop = iterations_per_job // loops
-    print(f"Each job will handle {iterations_per_loop} iterations per loop, "
-          f"repeated {loops} times.")
 
+    deadline = time.time() + timeout
+    completed = 0
     start = time.time()
-    for loop in range(loops):
-        Parallel(n_jobs=n_jobs)(
-            delayed(cpu_task)(iterations_per_loop) for _ in range(n_jobs)
-        )
-        print(f"Loop {loop + 1}/{loops} completed.")
-    end = time.time()
 
-    print(f"Joblib CPU benchmark completed in {end - start:.2f} seconds")
-    return end - start
+    with Progress(
+            TextColumn(f"[bold cyan]CPU Multi Core ({n_jobs} jobs)"),
+            BarColumn(bar_width=40),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeElapsedColumn(),
+            TextColumn(
+                "[bold]{task.fields[ops]}[/bold] batches | [bold green]{task.fields[ops_s]:.2f}[/bold green] ops/s"),
+    ) as progress:
+        task = progress.add_task("cpu-multi", total=timeout, ops=0, ops_s=0.0)
+        while time.time() < deadline:
+            Parallel(n_jobs=n_jobs)(
+                delayed(cpu_task)(10_000) for _ in range(n_jobs)
+            )
+            completed += 1
+            elapsed = time.time() - start
+            progress.update(task, completed=min(elapsed, timeout), ops=completed, ops_s=completed / elapsed)
+
+    duration = time.time() - start
+    ops_per_sec = completed / duration if duration > 0 else 0
+    total_tasks = completed * n_jobs
+
+    return {
+        "duration_seconds": round(duration, 2),
+        "timeout_seconds": timeout,
+        "iterations_completed": completed,
+        "ops_per_sec": round(ops_per_sec, 4),
+        "n_jobs": n_jobs,
+        "total_tasks": total_tasks,
+    }
