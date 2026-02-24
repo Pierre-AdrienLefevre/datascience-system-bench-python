@@ -261,42 +261,42 @@ Examples:
         type=int,
         default=30,
         metavar="SECONDS",
-        help="Timeout for CPU single-core benchmark (default: 120)"
+        help="Timeout for CPU single-core benchmark (default: 30)"
     )
     parser.add_argument(
         "--cpu-multi-timeout",
         type=int,
         default=240,
         metavar="SECONDS",
-        help="Timeout for CPU multi-core benchmark (default: 120)"
+        help="Timeout for CPU multi-core benchmark (default: 240)"
     )
     parser.add_argument(
         "--gpu-timeout",
         type=int,
         default=240,
         metavar="SECONDS",
-        help="Timeout for GPU benchmark (default: 120)"
+        help="Timeout for GPU benchmark (default: 240)"
     )
     parser.add_argument(
         "--ram-timeout",
         type=int,
         default=30,
         metavar="SECONDS",
-        help="Timeout for RAM benchmark (default: 120)"
+        help="Timeout for RAM benchmark (default: 30)"
     )
     parser.add_argument(
         "--disk-timeout",
         type=int,
         default=30,
         metavar="SECONDS",
-        help="Timeout for Disk benchmark (default: 120)"
+        help="Timeout for Disk benchmark (default: 30)"
     )
     parser.add_argument(
         "--combined-timeout",
         type=int,
         default=240,
         metavar="SECONDS",
-        help="Timeout for combined CPU+GPU benchmark (default: 120)"
+        help="Timeout for combined CPU+GPU benchmark (default: 240)"
     )
 
     return parser.parse_args()
