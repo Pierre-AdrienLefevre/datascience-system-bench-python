@@ -2,13 +2,13 @@
 name = "benchmark"
 version = "1.1"
 description = "Benchmarking tool for evaluating machine performance for data science tasks."
-requires-python = ">=3.14, <3.15"
+requires-python = ">=3.11, <3.15"
 dependencies = [
     "joblib~=1.5",
     "numpy~=2.4",
     "psutil~=7.2",
     "rich~=14.3",
-    "torch~=2.10",
+    "torch~=2.11",
 ]
 
 [tool.uv.sources]
